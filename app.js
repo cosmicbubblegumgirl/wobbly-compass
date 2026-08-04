@@ -23,9 +23,12 @@
   let furthestStep = 0;
   let saveTimer;
 
-  const hostedApi = "__FORM_API_BASE__";
-  const apiBase = window.WOBBLY_COMPASS_API ||
-    (location.hostname.endsWith(".github.io") ? hostedApi : "");
+  const hostedSupabaseUrl = "__SUPABASE_URL__";
+  const hostedSupabaseKey = "__SUPABASE_PUBLISHABLE_KEY__";
+  const supabaseUrl = window.WOBBLY_COMPASS_SUPABASE_URL ||
+    (location.hostname.endsWith(".github.io") ? hostedSupabaseUrl : "");
+  const supabaseKey = window.WOBBLY_COMPASS_SUPABASE_KEY ||
+    (location.hostname.endsWith(".github.io") ? hostedSupabaseKey : "");
 
   function valuesFor(name) {
     return [...form.querySelectorAll(`[name="${name}"]:checked`)].map((input) => input.value);
@@ -58,6 +61,80 @@
       finalNote: get("finalNote").value.trim(),
       durationSeconds: Math.round((Date.now() - startedAt) / 1000),
     };
+  }
+
+  function databaseRow(data, id, photo) {
+    return {
+      id,
+      anonymous_tag: data.anonymousTag || null,
+      journey_stage: data.journeyStage,
+      responsibilities: data.responsibilities,
+      age_confirmed: data.ageConfirmed,
+      consent_research: data.consentResearch,
+      capacity_frequency: data.capacityFrequency || null,
+      plan_change_story: data.planChangeStory || null,
+      first_move: data.firstMove || null,
+      current_tools: data.currentTools,
+      hardest_part: data.hardestPart || null,
+      pressure_response: data.pressureResponse || null,
+      capacity_snapshot: data.capacitySnapshot,
+      helpful_support: data.helpfulSupport || null,
+      connection_reality: data.connectionReality || null,
+      comfortable_data: data.comfortableData,
+      consent_photo: data.consentPhoto,
+      final_note: data.finalNote || null,
+      duration_seconds: data.durationSeconds,
+      photo_path: photo?.path || null,
+      photo_name: photo?.name || null,
+      photo_type: photo?.type || null,
+    };
+  }
+
+  async function responseMessage(response) {
+    const result = await response.json().catch(() => ({}));
+    return result.message || result.error_description || result.error || "The notebook did not answer.";
+  }
+
+  async function uploadPhoto(file, responseId) {
+    if (!file) return null;
+    const extensions = {
+      "image/jpeg": "jpg",
+      "image/png": "png",
+      "image/webp": "webp",
+      "image/gif": "gif",
+    };
+    const extension = extensions[file.type];
+    if (!extension) throw new Error("Choose a JPG, PNG, WEBP, or GIF picture.");
+
+    const path = `${responseId}/field-image.${extension}`;
+    const response = await fetch(`${supabaseUrl}/storage/v1/object/field-notes/${path}`, {
+      method: "POST",
+      headers: {
+        apikey: supabaseKey,
+        Authorization: `Bearer ${supabaseKey}`,
+        "Content-Type": file.type,
+        "x-upsert": "false",
+      },
+      body: file,
+    });
+    if (!response.ok) throw new Error(await responseMessage(response));
+    return { path, name: file.name.slice(0, 255), type: file.type };
+  }
+
+  async function storeResponse(data, photoFile) {
+    const responseId = crypto.randomUUID();
+    const photo = await uploadPhoto(photoFile, responseId);
+    const response = await fetch(`${supabaseUrl}/rest/v1/explorer_responses`, {
+      method: "POST",
+      headers: {
+        apikey: supabaseKey,
+        "Content-Type": "application/json",
+        Prefer: "return=minimal",
+      },
+      body: JSON.stringify(databaseRow(data, responseId, photo)),
+    });
+    if (!response.ok) throw new Error(await responseMessage(response));
+    return responseId.slice(0, 8).toUpperCase();
   }
 
   function saveDraft() {
@@ -231,26 +308,21 @@
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     if (!validateStep(currentStep)) return;
-    if (location.hostname.endsWith(".github.io") && !hostedApi.startsWith("https://")) {
+    if (!supabaseUrl.startsWith("https://") || !supabaseKey.startsWith("sb_publishable_")) {
       showError("The field notebook is still being connected. Please try again shortly.");
       return;
     }
 
     submitButton.disabled = true;
     submitButton.textContent = "Sending the dispatch…";
-    const body = new FormData();
-    body.append("payload", JSON.stringify(collectData()));
-    if (photoInput.files[0]) body.append("photo", photoInput.files[0]);
 
     try {
-      const response = await fetch(`${apiBase}/api/responses`, { method: "POST", body });
-      const result = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(result.error || "The notebook did not answer.");
+      const reference = await storeResponse(collectData(), photoInput.files[0]);
       localStorage.removeItem(draftKey);
       form.hidden = true;
       trailMap.hidden = true;
       successPanel.hidden = false;
-      document.querySelector("#referenceCode").textContent = result.reference;
+      document.querySelector("#referenceCode").textContent = reference;
       successPanel.scrollIntoView({ behavior: "smooth", block: "center" });
     } catch (error) {
       showError(error.message || "The route went quiet. Check your connection and try again.");
